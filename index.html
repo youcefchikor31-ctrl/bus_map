@@ -3,16 +3,20 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Oran Bus Map Engine</title>
+    <title>Oran Bus Map</title>
     
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 
     <style>
-        body, html { margin: 0; padding: 0; width: 100%; height: 100%; background-color: #000000; }
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; background-color: #121212; }
         #map { width: 100%; height: 100vh; }
         .leaflet-control-attribution { display: none !important; }
-        .dark-tiles { filter: invert(100%) hue-rotate(180deg) brightness(95%) contrast(100%); }
+        
+        /* تطبيق الفلتر الداكن على الخريطة لحمايتها من الانهيار */
+        .leaflet-tile-pane {
+            filter: invert(100%) hue-rotate(180deg) brightness(95%) contrast(100%);
+        }
     </style>
 </head>
 <body>
@@ -20,84 +24,71 @@
     <div id="map"></div>
 
     <script>
-        const map = L.map('map', { zoomControl: false, minZoom: 10 }).setView([35.6987, -0.6302], 14);
+        // 1. استقبال الإحداثيات من الأندرويد
+        const urlParams = new URLSearchParams(window.location.search);
+        const myLat = parseFloat(urlParams.get('myLat')) || 35.6987;
+        const myLon = parseFloat(urlParams.get('myLon')) || -0.6302;
+        const stopLat = parseFloat(urlParams.get('stopLat'));
+        const stopLon = parseFloat(urlParams.get('stopLon'));
+
+        // 2. حصر الكاميرا في وهران (بدون استدعاء خوادم خارجية للقص)
+        const oranBounds = L.latLngBounds([35.55, -0.80], [35.85, -0.45]);
+        const map = L.map('map', { 
+            zoomControl: false, 
+            minZoom: 12,
+            maxBounds: oranBounds,
+            maxBoundsViscosity: 1.0
+        }).setView([myLat, myLon], 14);
         
-        const nightLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, className: 'dark-tiles' });
-        nightLayer.addTo(map);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
 
-        // خوارزمية قص وهران
-        fetch('https://nominatim.openstreetmap.org/search?state=Oran&country=Algeria&polygon_geojson=1&format=json')
-            .then(res => res.json())
-            .then(data => {
-                if (data && data.length > 0) {
-                    const geojson = data[0].geojson;
-                    let oranCoords = [];
-                    if (geojson.type === "Polygon") oranCoords = geojson.coordinates[0].map(c => [c[1], c[0]]);
-                    else if (geojson.type === "MultiPolygon") oranCoords = geojson.coordinates[0][0].map(c => [c[1], c[0]]);
-                    
-                    if (oranCoords.length > 0) {
-                        const worldCoords = [[90, -180], [90, 180], [-90, 180], [-90, -180]];
-                        L.polygon([worldCoords, oranCoords], { color: '#FF0000', weight: 2, fillColor: '#000000', fillOpacity: 0.85 }).addTo(map);
-                        map.setMaxBounds(L.latLngBounds(oranCoords).pad(0.2)); 
-                    }
-                }
-            });
-
-        let userMarker, stopMarker, routePolyline;
-        let targetStopLat, targetStopLon;
-
+        // 3. الأيقونات (بدون ظل لمنع المربع الأسود)
         const userIcon = L.icon({
             iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-blue.png',
-            shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
             iconSize: [25, 41], iconAnchor: [12, 41]
         });
-        
         const stopIcon = L.icon({
             iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png',
-            shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
             iconSize: [25, 41], iconAnchor: [12, 41]
         });
 
-        const urlParams = new URLSearchParams(window.location.search);
-        const initialLat = parseFloat(urlParams.get('myLat'));
-        const initialLon = parseFloat(urlParams.get('myLon'));
-        targetStopLat = parseFloat(urlParams.get('stopLat'));
-        targetStopLon = parseFloat(urlParams.get('stopLon'));
+        let userMarker, stopMarker, routePolyline;
 
-        if(targetStopLat && targetStopLon) {
-            stopMarker = L.marker([targetStopLat, targetStopLon], {icon: stopIcon}).addTo(map).bindPopup("محطة الركوب").openPopup();
+        if(stopLat && stopLon) {
+            stopMarker = L.marker([stopLat, stopLon], {icon: stopIcon}).addTo(map).bindPopup("المحطة");
         }
 
-        // --- الدالة الذهبية: يقوم تطبيق الأندرويد باستدعائها كلما تحركت خطوة ---
+        // 4. خوارزمية التتبع الحي والرسم
         window.updateLiveLocation = function(newLat, newLon) {
             const newPos = [newLat, newLon];
             
-            // 1. تحريك دبوسك بمرونة
             if(!userMarker) {
                 userMarker = L.marker(newPos, {icon: userIcon}).addTo(map).bindPopup("أنت هنا");
-                map.setView(newPos, 16); // تقريب الكاميرا عليك
             } else {
                 userMarker.setLatLng(newPos);
             }
 
-            // 2. تحديث المسار الأزرق نحو المحطة
-            if(targetStopLat && targetStopLon) {
-                fetch(`https://router.project-osrm.org/route/v1/foot/${newLon},${newLat};${targetStopLon},${targetStopLat}?overview=full&geometries=geojson`)
+            if(stopLat && stopLon) {
+                fetch(`https://router.project-osrm.org/route/v1/foot/${newLon},${newLat};${stopLon},${stopLat}?overview=full&geometries=geojson`)
                 .then(res => res.json())
                 .then(data => {
                     if(data.routes && data.routes.length > 0) {
                         const coords = data.routes[0].geometry.coordinates.map(c => [c[1], c[0]]);
-                        if(routePolyline) map.removeLayer(routePolyline); // مسح الخط القديم
-                        routePolyline = L.polyline(coords, {color: '#007AFF', weight: 6, opacity: 0.9}).addTo(map); // رسم الجديد
+                        if(routePolyline) map.removeLayer(routePolyline);
+                        routePolyline = L.polyline(coords, {color: '#007AFF', weight: 6, opacity: 0.9}).addTo(map);
+                        
+                        // تعديل الكاميرا لتشمل موقعك والمحطة معاً عند الفتح الأول
+                        if(!window.hasZoomed) {
+                            map.fitBounds(routePolyline.getBounds(), {padding: [50, 50]});
+                            window.hasZoomed = true;
+                        }
                     }
-                });
+                }).catch(err => console.error("OSRM Error:", err));
             }
         };
 
-        // تشغيل الموقع الأولي عند فتح الخريطة لأول مرة
-        if(initialLat && initialLon) {
-            updateLiveLocation(initialLat, initialLon);
-        }
+        // التشغيل الفوري
+        updateLiveLocation(myLat, myLon);
     </script>
 </body>
 </html>
