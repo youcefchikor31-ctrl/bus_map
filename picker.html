@@ -3,19 +3,26 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Pick Destination</title>
+    <title>Pick Destination Engine</title>
     
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 
     <style>
-        body, html { margin: 0; padding: 0; width: 100%; height: 100%; background-color: #121212; }
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; background-color: #000000; }
         #map { width: 100%; height: 100vh; }
         .leaflet-control-attribution { display: none !important; }
         
-        /* تطبيق الفلتر الداكن على طبقة الخريطة فقط لمنع تشوه الدبابيس */
-        .leaflet-tile-pane {
+        .dark-tiles {
             filter: invert(100%) hue-rotate(180deg) brightness(95%) contrast(100%);
+        }
+        
+        .leaflet-control-layers {
+            border-radius: 12px !important;
+            padding: 5px !important;
+            font-family: Arial, sans-serif;
+            font-weight: bold;
+            background: rgba(255, 255, 255, 0.9) !important;
         }
     </style>
 </head>
@@ -24,32 +31,74 @@
     <div id="map"></div>
 
     <script>
-        // تحديد حدود صارمة جداً لولاية وهران (منع الخروج للبحر أو الولايات المجاورة)
-        const oranBounds = L.latLngBounds([35.55, -0.80], [35.85, -0.45]);
-
-        // تهيئة الخريطة: تقريب مبدئي (14) يوضح الشوارع، ومنع التبعيد أقل من 12
+        // تهيئة الخريطة الأساسية
         const map = L.map('map', { 
-            zoomControl: false, 
-            minZoom: 12, // يمنع رؤية إسبانيا أو الجزائر العاصمة
-            maxBounds: oranBounds, // يمنع السحب خارج وهران
-            maxBoundsViscosity: 1.0
-        }).setView([35.6987, -0.6302], 14);
+            zoomControl: false,
+            minZoom: 10 
+        }).setView([35.6987, -0.6302], 13);
         
-        // استخدام خريطة الشوارع العادية (الفلتر في CSS سيحولها لليلي)
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { 
-            maxZoom: 19 
-        }).addTo(map);
+        // طبقات الخريطة (الليل، النهار، القمر الصناعي)
+        const nightLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, className: 'dark-tiles' });
+        const dayLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 });
+        const satelliteLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19 });
 
+        nightLayer.addTo(map);
+
+        const baseMaps = {
+            "الوضع الليلي 🌙": nightLayer,
+            "الوضع النهاري ☀️": dayLayer,
+            "القمر الصناعي 🛰️": satelliteLayer
+        };
+        L.control.layers(baseMaps, null, {position: 'topleft'}).addTo(map);
+
+        // خوارزمية "قص وهران"
+        fetch('https://nominatim.openstreetmap.org/search?state=Oran&country=Algeria&polygon_geojson=1&format=json')
+            .then(res => res.json())
+            .then(data => {
+                if (data && data.length > 0) {
+                    const geojson = data[0].geojson;
+                    let oranCoords = [];
+                    
+                    if (geojson.type === "Polygon") {
+                        oranCoords = geojson.coordinates[0].map(c => [c[1], c[0]]);
+                    } else if (geojson.type === "MultiPolygon") {
+                        let maxLen = 0;
+                        geojson.coordinates.forEach(poly => {
+                            if(poly[0].length > maxLen) {
+                                maxLen = poly[0].length;
+                                oranCoords = poly[0].map(c => [c[1], c[0]]);
+                            }
+                        });
+                    }
+
+                    if (oranCoords.length > 0) {
+                        const worldCoords = [
+                            [90, -180], [90, 180], [-90, 180], [-90, -180]
+                        ];
+                        
+                        L.polygon([worldCoords, oranCoords], {
+                            color: '#FF0000', 
+                            weight: 2,
+                            fillColor: '#000000', 
+                            fillOpacity: 0.85 
+                        }).addTo(map);
+
+                        const oranBounds = L.latLngBounds(oranCoords);
+                        map.setMaxBounds(oranBounds.pad(0.2)); 
+                    }
+                }
+            })
+            .catch(err => console.error("خطأ في جلب حدود وهران:", err));
+
+        // ميزة تحديد الوجهة بالضغط (وضع المسمار)
         let pickedMarker = null;
 
-        // أيقونة الدبوس (تم إزالة الظل shadowUrl لحل مشكلة المربع الأسود)
         const pinIcon = L.icon({
             iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-violet.png',
-            iconSize: [25, 41], 
-            iconAnchor: [12, 41]
+            shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
+            iconSize: [25, 41], iconAnchor: [12, 41]
         });
 
-        // حدث الضغط على الخريطة
         map.on('click', function(e) {
             const lat = e.latlng.lat;
             const lon = e.latlng.lng;
@@ -60,10 +109,9 @@
                 pickedMarker = L.marker([lat, lon], {icon: pinIcon}).addTo(map);
             }
 
-            // توجيه الكاميرا للمكان المختار بنعومة
             map.flyTo([lat, lon], 16, { animate: true, duration: 0.5 });
 
-            // إرسال الإحداثيات إلى الأندرويد
+            // إرسال الإحداثيات لتطبيق الأندرويد
             if(window.AndroidApp) {
                 window.AndroidApp.onLocationPicked(lat, lon);
             }
